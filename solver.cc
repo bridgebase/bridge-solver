@@ -541,9 +541,18 @@ class Cache {
     Reset();
   }
 
+  // Clears only the entries loaded since the last reset when there are few
+  // of them (small searches), else the whole table.
   void Reset() {
-    load_count = lookups = lookup_probes = hits = updates = update_probes = overwrites = 0;
-    for (int i = 0; i < size; ++i) entries[i].Reset(0);
+    lookups = lookup_probes = hits = updates = update_probes = overwrites = 0;
+    if (!touched_overflow) {
+      for (uint32_t i : touched) entries[i].Reset(0);
+    } else {
+      for (int i = 0; i < size; ++i) entries[i].Reset(0);
+    }
+    touched.clear();
+    touched_overflow = false;
+    load_count = 0;
   }
 
   void ShowStatistics() const {
@@ -602,6 +611,7 @@ class Cache {
       if (entry.hash == 0) {
         ++load_count;
         entry.Reset(hash);
+        Touch((index + d) & (size - 1));
         return &entry;
       }
       STATS(++update_probes);
@@ -621,6 +631,8 @@ class Cache {
 
     // Move entries in the old cache to the new cache.
     load_count = 0;
+    touched.clear();
+    touched_overflow = false;
     for (int i = 0; i < old_size; ++i) {
       auto hash = old_entries[i].hash;
       if (hash == 0) continue;
@@ -630,11 +642,26 @@ class Cache {
         if (entry.hash == 0) {
           old_entries[i].MoveTo(entry);
           ++load_count;
+          Touch((index + d) & (size - 1));
           break;
         }
       }
     }
   }
+
+  // Records an entry loaded since the last reset (up to kMaxTouched of them).
+  void Touch(uint32_t i) {
+    if (touched_overflow) return;
+    if (touched.size() >= kMaxTouched) {
+      touched_overflow = true;
+      touched.clear();
+      return;
+    }
+    touched.push_back(i);
+  }
+  static constexpr size_t kMaxTouched = 4096;
+  std::vector<uint32_t> touched;
+  bool touched_overflow = true;  // the constructor's Reset() clears everything
 
   const char* cache_name;
   int bits;
